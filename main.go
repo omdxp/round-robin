@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"golang.org/x/net/proxy"
 )
 
 type Backend struct {
@@ -58,9 +63,11 @@ func (b *Backend) IsAlive() (alive bool) {
 	return
 }
 
+var serverPool = ServerPool{}
+
 // lb load balances the incoming request
-func (sp *ServerPool) lb(w http.ResponseWriter, r *http.Request) {
-	peer := sp.GetNextPeer()
+func lb(w http.ResponseWriter, r *http.Request) {
+	peer := serverPool.GetNextPeer()
 	if peer != nil {
 		peer.ReverseProxy.ServeHTTP(w, r)
 		return
@@ -68,10 +75,66 @@ func (sp *ServerPool) lb(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
 }
 
+// GetRetryFromContext function
+func GetRetryFromContext(ctx context.Context) int {
+	if retry, ok := ctx.Value("retry").(int); ok {
+		return retry
+	}
+	return 0
+}
+
+// GetAttemptsFromContext function
+func GetAttemptsFromContext(r *http.Request) int {
+	if attempts, ok := r.Context().Value("attempts").(int); ok {
+		return attempts
+	}
+	return 0
+}
+
 func main() {
 	u, _ := url.Parse("http://localhost:8080")
 	rp := httputil.NewSingleHostReverseProxy(u)
 	// init server and add this as handler
 	_ = http.HandlerFunc(rp.ServeHTTP)
+
+	// create a serverPool
+	serverPool = ServerPool{
+		backends: []*Backend{
+			&Backend{
+				URL: &url.URL{
+					Scheme: "http",
+					Host:   "localhost:8080",
+				},
+			},
+			&Backend{
+				URL: &url.URL{
+					Scheme: "http",
+					Host:   "localhost:8081",
+				},
+			},
+		},
+	}
+
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		log.Printf("[%s] %s\n", u.Host, err.Error())
+		retries := GetRetryFromContext(r.Context())
+		if retries < 3 {
+			select {
+			case <-time.After(10 * time.Microsecond):
+				ctx := context.WithValue(r.Context(), "retry", retries+1)
+				proxy.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+		}
+
+		// after 3 retries, mark this backend as dead
+		serverPool.backends[0].SetAlive(false)
+
+		// if the request routing for few attempts with different backends, increase the counter
+		attempts := GetAttemptsFromContext(r)
+		log.Printf("[%s] %d attempts\n", u.Host, attempts)
+		ctx := context.WithValue(r.Context(), "attempts", attempts+1)
+		lb(w, r.WithContext(ctx))
+	}
 
 }
