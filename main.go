@@ -58,9 +58,20 @@ func (b *Backend) IsAlive() (alive bool) {
 	return
 }
 
+// lb load balances the incoming request
+func (sp *ServerPool) lb(w http.ResponseWriter, r *http.Request) {
+	peer := sp.GetNextPeer()
+	if peer != nil {
+		peer.ReverseProxy.ServeHTTP(w, r)
+		return
+	}
+	http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+}
+
 func main() {
 	u, _ := url.Parse("http://localhost:8080")
 	rp := httputil.NewSingleHostReverseProxy(u)
 	// init server and add this as handler
-	http.HandlerFunc(rp.ServeHTTP)
+	_ = http.HandlerFunc(rp.ServeHTTP)
+
 }
