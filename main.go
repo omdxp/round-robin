@@ -32,8 +32,8 @@ func (sp *ServerPool) GetNextPeer() *Backend {
 	next := sp.NextIndex()
 	l := len(sp.backends) + next // start from next add move a full cycle
 	for i := next; i < l; i++ {
-		idx := i % len(sp.backends) // start from next and move a full cycle
-		if sp.backends[idx].Alive { // if we have an alive backend, use it and store if its not the original one
+		idx := i % len(sp.backends)     // start from next and move a full cycle
+		if sp.backends[idx].IsAlive() { // if we have an alive backend, use it and store if its not the original one
 			if idx != next {
 				atomic.StoreUint64(&sp.current, uint64(idx))
 			}
@@ -41,6 +41,21 @@ func (sp *ServerPool) GetNextPeer() *Backend {
 		}
 	}
 	return nil
+}
+
+// SetAlive for this backend
+func (b *Backend) SetAlive(alive bool) {
+	b.mux.Lock()
+	b.Alive = alive
+	b.mux.Unlock()
+}
+
+// IsAlive returns true backend is alive
+func (b *Backend) IsAlive() (alive bool) {
+	b.mux.RLock()
+	alive = b.Alive
+	b.mux.RUnlock()
+	return
 }
 
 func main() {
