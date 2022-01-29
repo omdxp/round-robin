@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -93,6 +94,43 @@ func GetRetryFromContext(ctx context.Context) int {
 	return 0
 }
 
+// isBackendAlive checks whether a backend is Alive by establishing a TCP connection
+func isBackendAlive(u *url.URL) bool {
+	timeout := 2 * time.Second
+	conn, err := net.DialTimeout("tcp", u.Host, timeout)
+	if err != nil {
+		log.Println("Site unreachable, error: ", err)
+		return false
+	}
+	_ = conn.Close() // close it, we don't need to maintain this connection
+	return true
+}
+
+// HealthCheck pings the backends and update the status
+func (sp *ServerPool) HealthCheck() {
+	for _, b := range sp.backends {
+		status := "up"
+		alive := isBackendAlive(b.URL)
+		b.SetAlive(alive)
+		if !alive {
+			status = "down"
+		}
+		log.Printf("%s [%s]\n", b.URL, status)
+	}
+}
+
+func healthCheck() {
+	t := time.NewTicker(time.Second * 20)
+	for {
+		select {
+		case <-t.C:
+			log.Println("Starting health check...")
+			serverPool.HealthCheck()
+			log.Println("Health check completed")
+		}
+	}
+}
+
 // GetAttemptsFromContext function
 func GetAttemptsFromContext(r *http.Request) int {
 	if attempts, ok := r.Context().Value(Attempts).(int); ok {
@@ -102,6 +140,7 @@ func GetAttemptsFromContext(r *http.Request) int {
 }
 
 func main() {
+
 	u, _ := url.Parse("http://localhost:8080")
 	rp := httputil.NewSingleHostReverseProxy(u)
 	// init server and add this as handler
@@ -124,6 +163,8 @@ func main() {
 			},
 		},
 	}
+
+	go healthCheck()
 
 	var proxy = &httputil.ReverseProxy{
 		Director: func(r *http.Request) {
