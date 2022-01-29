@@ -9,8 +9,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+)
 
-	"golang.org/x/net/proxy"
+const (
+	Attempts int = iota
+	Retry
 )
 
 type Backend struct {
@@ -67,6 +70,13 @@ var serverPool = ServerPool{}
 
 // lb load balances the incoming request
 func lb(w http.ResponseWriter, r *http.Request) {
+	attempts := GetAttemptsFromContext(r)
+	if attempts > 3 {
+		log.Printf("[%s] %d attempts\n", r.URL.Host, attempts)
+		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
 	peer := serverPool.GetNextPeer()
 	if peer != nil {
 		peer.ReverseProxy.ServeHTTP(w, r)
@@ -77,7 +87,7 @@ func lb(w http.ResponseWriter, r *http.Request) {
 
 // GetRetryFromContext function
 func GetRetryFromContext(ctx context.Context) int {
-	if retry, ok := ctx.Value("retry").(int); ok {
+	if retry, ok := ctx.Value(Retry).(int); ok {
 		return retry
 	}
 	return 0
@@ -85,7 +95,7 @@ func GetRetryFromContext(ctx context.Context) int {
 
 // GetAttemptsFromContext function
 func GetAttemptsFromContext(r *http.Request) int {
-	if attempts, ok := r.Context().Value("attempts").(int); ok {
+	if attempts, ok := r.Context().Value(Attempts).(int); ok {
 		return attempts
 	}
 	return 0
@@ -112,6 +122,14 @@ func main() {
 					Host:   "localhost:8081",
 				},
 			},
+		},
+	}
+
+	var proxy = &httputil.ReverseProxy{
+		Director: func(r *http.Request) {
+			r.URL.Scheme = "http"
+			r.URL.Host = "localhost:8080"
+			r.Host = "localhost:8080"
 		},
 	}
 
